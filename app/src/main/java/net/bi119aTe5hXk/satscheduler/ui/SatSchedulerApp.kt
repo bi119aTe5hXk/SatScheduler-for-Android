@@ -2082,87 +2082,90 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
     val scheduleStore = remember { StationScheduleStore(context) }
     val scope = rememberCoroutineScope()
     var observations by remember { mutableStateOf<List<Observation>>(emptyList()) }
-    var loading by rememberSaveable { mutableStateOf(false) }
+    var loadingStationId by rememberSaveable { mutableStateOf<Int?>(null) }
     var message by rememberSaveable { mutableStateOf("") }
-    var showingObservationList by rememberSaveable { mutableStateOf(false) }
+    var listStationId by rememberSaveable { mutableStateOf<Int?>(null) }
     val stationNames = remember(targets) {
         targets.flatMap { target -> target.stationNames.entries }.associate { it.key to it.value }
     }
+    val stationIds = remember(targets) {
+        targets.flatMap { it.stationIds }.distinct().sorted()
+    }
 
-    if (showingObservationList) {
+    listStationId?.let { stationId ->
         TimelineObservationListScreen(
-            observations = observations,
-            onBack = { showingObservationList = false },
+            title = stationNames[stationId] ?: "Station $stationId",
+            observations = observations.filter { it.groundStation == stationId },
+            onBack = { listStationId = null },
             modifier = modifier
         )
         return
     }
 
-    fun refresh() {
+    fun refreshStation(stationId: Int) {
         scope.launch {
-            loading = true
+            loadingStationId = stationId
             message = ""
-            val stationIds = targets.flatMap { it.stationIds }.distinct().sorted()
-            observations = scheduleStore.load(stationIds)
-            runCatching { scheduleStore.refresh(api, stationIds) }
-                .onSuccess { observations = it }
-                .onFailure { message = "Refresh failed, showing cache: ${it.message ?: "unknown error"}" }
-            loading = false
+            runCatching { scheduleStore.refresh(api, listOf(stationId), stationDelayMillis = 0) }
+                .onSuccess { observations = scheduleStore.load(stationIds) }
+                .onFailure { message = "Station $stationId refresh failed, showing cache: ${it.message ?: "unknown error"}" }
+            loadingStationId = null
         }
     }
 
     LaunchedEffect(targets.map { it.id }) {
-        val stationIds = targets.flatMap { it.stationIds }.distinct().sorted()
         observations = scheduleStore.load(stationIds)
     }
 
     Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Timeline", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Row {
-                IconButton(onClick = { showingObservationList = true }, enabled = observations.isNotEmpty()) {
-                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Observation list")
-                }
-                IconButton(onClick = { refresh() }, enabled = !loading && targets.isNotEmpty()) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh timeline")
-                }
-            }
-        }
+        Text("Timeline", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         if (targets.isEmpty()) {
             EmptyState("Timeline will summarize saved watch targets after you add them.")
-        } else if (loading && observations.isEmpty()) {
-            LoadingRow("Loading future observations...")
-        } else if (observations.isEmpty()) {
-            EmptyState("No future observations found for watched stations.")
         } else {
             val now = Instant.now()
             val end = now.plus(Duration.ofDays(2))
-            val timelineItems = observations.mapNotNull { observation ->
-                val start = parseSatnogsInstantOrNull(observation.start)
-                val stop = parseSatnogsInstantOrNull(observation.end)
-                val stationId = observation.groundStation
-                if (start == null || stop == null || stationId == null) null else {
-                    TimelineItem(
-                        stationId = stationId,
-                        stationName = observation.stationName ?: stationNames[stationId] ?: "Station $stationId",
-                        label = observation.title,
-                        start = start,
-                        end = stop,
-                        color = Color(0xFF1F9D6E)
-                    )
-                }
-            }
             LazyColumn(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
-                item {
-                    PassTimeline(
-                        items = timelineItems,
-                        start = now,
-                        end = end,
-                        stationNames = stationNames
-                    )
+                items(stationIds, key = { it }) { stationId ->
+                    val stationObservations = observations.filter { it.groundStation == stationId }
+                    val timelineItems = stationObservations.mapNotNull { observation ->
+                        val start = parseSatnogsInstantOrNull(observation.start)
+                        val stop = parseSatnogsInstantOrNull(observation.end)
+                        if (start == null || stop == null) null else {
+                            TimelineItem(
+                                stationId = stationId,
+                                stationName = observation.stationName ?: stationNames[stationId] ?: "Station $stationId",
+                                label = observation.title,
+                                start = start,
+                                end = stop,
+                                color = Color(0xFF1F9D6E)
+                            )
+                        }
+                    }
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                Text(stationNames[stationId] ?: "Station $stationId", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                IconButton(onClick = { listStationId = stationId }, enabled = stationObservations.isNotEmpty()) {
+                                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Observation list")
+                                }
+                                IconButton(onClick = { refreshStation(stationId) }, enabled = loadingStationId == null) {
+                                    Icon(Icons.Default.Refresh, contentDescription = "Refresh station timeline")
+                                }
+                            }
+                            if (loadingStationId == stationId) {
+                                LoadingRow("Loading future observations...")
+                            }
+                            PassTimeline(
+                                items = timelineItems,
+                                start = now,
+                                end = end,
+                                stationNames = mapOf(stationId to "$stationId")
+                            )
+                        }
+                    }
                 }
                 if (message.isNotBlank()) {
                     item { Text(message, color = MaterialTheme.colorScheme.error) }
@@ -2174,6 +2177,7 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
 
 @Composable
 private fun TimelineObservationListScreen(
+    title: String,
     observations: List<Observation>,
     onBack: () -> Unit,
     modifier: Modifier = Modifier
@@ -2183,7 +2187,7 @@ private fun TimelineObservationListScreen(
             IconButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
-            Text("Observation List", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         }
         if (observations.isEmpty()) {
             EmptyState("No cached future observations.")
@@ -2246,18 +2250,18 @@ private fun SettingsScreen(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = observerId,
-                    onValueChange = { observerId = it },
-                    label = { Text("Observer ID") },
-                    modifier = Modifier.fillMaxWidth()
-                )
                 Button(
                     onClick = {
                         onSaveToken(draftToken)
                         message = "API token saved."
                     }
                 ) { Text("Save API token") }
+                OutlinedTextField(
+                    value = observerId,
+                    onValueChange = { observerId = it },
+                    label = { Text("Observer ID") },
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Button(
                     onClick = {
                         saveSettings()
