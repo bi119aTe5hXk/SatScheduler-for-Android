@@ -60,7 +60,7 @@ class StationScheduleStore(context: Context) {
 
     private fun saveStation(stationId: Int, observations: List<Observation>) {
         val array = JSONArray()
-        observations.forEach { array.put(it.toJson()) }
+        observations.forEach { array.put(it.toCacheJson()) }
         prefs.edit()
             .putString(keyForStation(stationId), array.toString())
             .putString(keyForUpdatedAt(stationId), Instant.now().toString())
@@ -72,7 +72,7 @@ class StationScheduleStore(context: Context) {
     private fun keyForUpdatedAt(stationId: Int): String = "station_${stationId}_updated_at"
 }
 
-private fun Observation.toJson(): JSONObject {
+internal fun Observation.toCacheJson(): JSONObject {
     return JSONObject()
         .put("id", id)
         .put("start", start)
@@ -107,7 +107,7 @@ private fun Observation.toJson(): JSONObject {
         .put("maxAltitude", maxAltitude)
 }
 
-private fun JSONObject.toObservationCache(): Observation {
+internal fun JSONObject.toObservationCache(): Observation {
     return Observation(
         id = optInt("id"),
         start = stringOrNull("start"),

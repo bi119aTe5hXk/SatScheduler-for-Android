@@ -44,6 +44,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.PrimaryTabRow
@@ -99,9 +100,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import net.bi119aTe5hXk.satscheduler.data.ObservationScheduleRequest
 import net.bi119aTe5hXk.satscheduler.data.ObservationPage
+import net.bi119aTe5hXk.satscheduler.data.ObservationsStore
 import net.bi119aTe5hXk.satscheduler.data.AppSettings
 import net.bi119aTe5hXk.satscheduler.data.AppSettingsStore
 import net.bi119aTe5hXk.satscheduler.data.AutoScheduleSortOrder
@@ -221,6 +224,7 @@ private fun WatchListScreen(
 ) {
     var showingAddDialog by rememberSaveable { mutableStateOf(false) }
     var predictionTarget by remember { mutableStateOf<WatchTarget?>(null) }
+    var editingTarget by remember { mutableStateOf<WatchTarget?>(null) }
     var showingBatchSchedule by rememberSaveable { mutableStateOf(false) }
 
     if (showingBatchSchedule) {
@@ -253,7 +257,7 @@ private fun WatchListScreen(
                     WatchTargetCard(
                         target = target,
                         onPredict = { predictionTarget = target },
-                        onDelete = { onTargetsChanged(targets.filterNot { it.id == target.id }) }
+                        onEdit = { editingTarget = target }
                     )
                 }
             }
@@ -267,6 +271,21 @@ private fun WatchListScreen(
             onAdd = { target ->
                 onTargetsChanged(targets + target)
                 showingAddDialog = false
+            }
+        )
+    }
+    editingTarget?.let { target ->
+        EditTargetDialog(
+            api = api,
+            target = target,
+            onDismiss = { editingTarget = null },
+            onSave = { updated ->
+                onTargetsChanged(targets.map { if (it.id == updated.id) updated else it })
+                editingTarget = null
+            },
+            onDelete = {
+                onTargetsChanged(targets.filterNot { it.id == target.id })
+                editingTarget = null
             }
         )
     }
@@ -565,6 +584,281 @@ private fun AddTargetDialog(api: SatnogsApi, onDismiss: () -> Unit, onAdd: (Watc
 }
 
 @Composable
+private fun EditTargetDialog(
+    api: SatnogsApi,
+    target: WatchTarget,
+    onDismiss: () -> Unit,
+    onSave: (WatchTarget) -> Unit,
+    onDelete: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var stations by remember { mutableStateOf<List<GroundStation>>(emptyList()) }
+    var transmitters by remember { mutableStateOf<List<Transmitter>>(emptyList()) }
+    var name by rememberSaveable(target.id) { mutableStateOf(target.name) }
+    var selectedTransmitterId by rememberSaveable(target.id) { mutableStateOf(target.transmitterId) }
+    var selectedStationIds by remember(target.id) { mutableStateOf(target.stationIds.toSet()) }
+    var stationQuery by rememberSaveable(target.id) { mutableStateOf("") }
+    var centerFrequencyMHz by rememberSaveable(target.id) { mutableStateOf(target.centerFrequency?.toMHzText().orEmpty()) }
+    var requireDaylight by rememberSaveable(target.id) { mutableStateOf(target.requireStationDaylight) }
+    var minPeakElevation by rememberSaveable(target.id) { mutableStateOf(target.minPeakElevation?.formatDeg().orEmpty()) }
+    var maxPeakElevation by rememberSaveable(target.id) { mutableStateOf(target.maxPeakElevation?.formatDeg().orEmpty()) }
+    var minAzimuth by rememberSaveable(target.id) { mutableStateOf(target.minAzimuth?.formatDeg().orEmpty()) }
+    var maxAzimuth by rememberSaveable(target.id) { mutableStateOf(target.maxAzimuth?.formatDeg().orEmpty()) }
+    var loadingStations by rememberSaveable { mutableStateOf(false) }
+    var loadingTransmitters by rememberSaveable { mutableStateOf(false) }
+    var transmitterMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var confirmingDelete by rememberSaveable { mutableStateOf(false) }
+    var message by rememberSaveable { mutableStateOf("") }
+
+    val snapshotStations = remember(target) {
+        target.stationSnapshots.values.map { snapshot ->
+            GroundStation(
+                id = snapshot.id,
+                name = snapshot.name,
+                altitude = snapshot.altitude,
+                minHorizon = snapshot.minHorizon,
+                lat = snapshot.latitude,
+                lng = snapshot.longitude,
+                qthlocator = null,
+                antennaText = null,
+                owner = null,
+                status = "saved",
+                observations = null,
+                futureObservations = null,
+                successRate = null
+            )
+        }
+    }
+    val allStations = remember(stations, snapshotStations) {
+        (stations + snapshotStations).distinctBy { it.id }.sortedBy { it.displayName }
+    }
+    val filteredStations by remember(allStations, stationQuery) {
+        derivedStateOf { allStations.filterByStationQuery(stationQuery) }
+    }
+    val selectedTransmitter = transmitters.firstOrNull { it.uuid == selectedTransmitterId }
+    val centerFrequencyHz = centerFrequencyMHz.toDoubleOrNull()?.takeIf { it > 0 }?.let { (it * 1_000_000).toInt() }
+    val peakError = peakElevationError(minPeakElevation, maxPeakElevation)
+    val azimuthError = azimuthError(minAzimuth, maxAzimuth)
+    val canSave = selectedTransmitterId.isNotBlank() &&
+        selectedStationIds.isNotEmpty() &&
+        centerFrequencyHz != null &&
+        peakError == null &&
+        azimuthError == null
+
+    LaunchedEffect(target.id) {
+        loadingTransmitters = true
+        loadingStations = true
+        runCatching { api.fetchTransmitters(target.satelliteId) }
+            .onSuccess { transmitters = it }
+            .onFailure { message = it.message ?: "Failed to load transmitters" }
+        loadingTransmitters = false
+        runCatching { api.fetchOnlineStations() }
+            .onSuccess { stations = it }
+            .onFailure { message = it.message ?: "Failed to load stations" }
+        loadingStations = false
+    }
+
+    if (confirmingDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmingDelete = false },
+            title = { Text("Delete Watch Target") },
+            text = { Text("Delete ${target.name}? This cannot be undone.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmingDelete = false
+                        onDelete()
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmingDelete = false }) { Text("Cancel") } }
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit Watch Target") },
+        text = {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                item { SectionTitle("Satellite") }
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(target.satelliteName ?: target.satelliteId, fontWeight = FontWeight.SemiBold)
+                            Text("Satellite ID: ${target.satelliteId}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+                            Text(
+                                "Satellite cannot be changed while editing. Create a new watch target to use another satellite.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    }
+                }
+                item {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Name") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item { SectionTitle("Transmitter") }
+                item {
+                    when {
+                        loadingTransmitters -> LoadingRow("Loading transmitters...")
+                        transmitters.isEmpty() -> Text("Current transmitter: ${target.transmitterDescription ?: target.transmitterId}", color = MaterialTheme.colorScheme.secondary)
+                        else -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { transmitterMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                                    Text(selectedTransmitter?.let { transmitterLabel(it, null) } ?: target.transmitterDescription ?: selectedTransmitterId)
+                                }
+                                DropdownMenu(expanded = transmitterMenuOpen, onDismissRequest = { transmitterMenuOpen = false }) {
+                                    transmitters.forEach { transmitter ->
+                                        DropdownMenuItem(
+                                            text = { Text(transmitterLabel(transmitter, null)) },
+                                            onClick = {
+                                                selectedTransmitterId = transmitter.uuid
+                                                centerFrequencyMHz = transmitter.defaultCenterFrequencyHz?.toMHzText().orEmpty()
+                                                transmitterMenuOpen = false
+                                            }
+                                        )
+                                    }
+                                }
+                                selectedTransmitter?.let { transmitter ->
+                                    Text("Downlink: ${transmitter.frequencyText}", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+                item {
+                    OutlinedTextField(
+                        value = centerFrequencyMHz,
+                        onValueChange = { centerFrequencyMHz = it },
+                        label = { Text("Center frequency MHz") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item { SectionTitle("Ground Stations") }
+                item {
+                    OutlinedTextField(
+                        value = stationQuery,
+                        onValueChange = { stationQuery = it },
+                        label = { Text("Search online stations") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                if (loadingStations) {
+                    item { LoadingRow("Loading online stations...") }
+                } else if (filteredStations.isEmpty()) {
+                    item { Text("No ground stations found.", color = MaterialTheme.colorScheme.secondary) }
+                } else {
+                    items(filteredStations, key = { it.id }) { station ->
+                        SelectableStationRow(
+                            station = station,
+                            selected = selectedStationIds.contains(station.id),
+                            onToggle = {
+                                selectedStationIds = if (selectedStationIds.contains(station.id)) {
+                                    selectedStationIds - station.id
+                                } else {
+                                    selectedStationIds + station.id
+                                }
+                            }
+                        )
+                    }
+                }
+
+                item { SectionTitle("Scheduling Options") }
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Require station daylight")
+                        Switch(checked = requireDaylight, onCheckedChange = { requireDaylight = it })
+                    }
+                }
+                item {
+                    RangeFields(
+                        title = "Peak elevation range",
+                        minValue = minPeakElevation,
+                        maxValue = maxPeakElevation,
+                        minLabel = "Min deg",
+                        maxLabel = "Max deg",
+                        onMinChange = { minPeakElevation = it },
+                        onMaxChange = { maxPeakElevation = it },
+                        error = peakError
+                    )
+                }
+                item {
+                    RangeFields(
+                        title = "Azimuth range",
+                        minValue = minAzimuth,
+                        maxValue = maxAzimuth,
+                        minLabel = "Min deg",
+                        maxLabel = "Max deg",
+                        onMinChange = { minAzimuth = it },
+                        onMaxChange = { maxAzimuth = it },
+                        error = azimuthError
+                    )
+                }
+                if (message.isNotBlank()) {
+                    item { Text(message, color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val stationNames = selectedStationIds.associateWith { id ->
+                        allStations.firstOrNull { it.id == id }?.displayName ?: target.stationNames[id] ?: "Station $id"
+                    }
+                    val stationSnapshots = selectedStationIds.associateWith { id ->
+                        allStations.firstOrNull { it.id == id }?.let { station ->
+                            WatchStationSnapshot(
+                                id = station.id,
+                                name = station.displayName,
+                                latitude = station.lat,
+                                longitude = station.lng,
+                                altitude = station.altitude,
+                                minHorizon = station.minHorizon
+                            )
+                        } ?: target.stationSnapshots[id] ?: WatchStationSnapshot(id, "Station $id", null, null, null, null)
+                    }
+                    onSave(
+                        target.copy(
+                            name = name.ifBlank { target.satelliteName ?: target.satelliteId },
+                            transmitterId = selectedTransmitterId,
+                            transmitterDescription = selectedTransmitter?.displayName ?: target.transmitterDescription,
+                            centerFrequency = centerFrequencyHz,
+                            stationIds = selectedStationIds.sorted(),
+                            stationNames = stationNames,
+                            stationSnapshots = stationSnapshots,
+                            requireStationDaylight = requireDaylight,
+                            minPeakElevation = parsePeakElevation(minPeakElevation),
+                            maxPeakElevation = parsePeakElevation(maxPeakElevation),
+                            minAzimuth = parseAzimuth(minAzimuth),
+                            maxAzimuth = parseAzimuth(maxAzimuth)
+                        )
+                    )
+                },
+                enabled = canSave
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { confirmingDelete = true }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        }
+    )
+}
+
+@Composable
 private fun SelectableSatelliteRow(satellite: Satellite, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
@@ -648,15 +942,17 @@ private fun LoadingRow(text: String) {
 }
 
 @Composable
-private fun WatchTargetCard(target: WatchTarget, onPredict: () -> Unit, onDelete: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
+private fun WatchTargetCard(target: WatchTarget, onPredict: () -> Unit, onEdit: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onPredict)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
                 Column(Modifier.weight(1f)) {
                     Text(target.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(target.satelliteName ?: target.satelliteId, style = MaterialTheme.typography.bodyMedium)
+                    Text("Satellite ID: ${target.satelliteId}", style = MaterialTheme.typography.bodyMedium)
                 }
-                TextButton(onClick = onDelete) { Text("Delete") }
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit watch target")
+                }
             }
             Text("Transmitter: ${target.transmitterDescription ?: target.transmitterId}")
             target.centerFrequency?.let { Text("Center frequency: ${it.toMHzText()} MHz") }
@@ -667,9 +963,6 @@ private fun WatchTargetCard(target: WatchTarget, onPredict: () -> Unit, onDelete
                 rangeText("azimuth", target.minAzimuth, target.maxAzimuth)
             )
             if (options.isNotEmpty()) Text("Options: ${options.joinToString(" / ")}")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onPredict) { Text("Predict") }
-            }
         }
     }
 }
@@ -1216,6 +1509,7 @@ private fun PassTimeline(
 private fun ObservationsScreen(api: SatnogsApi, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val settingsStore = remember { AppSettingsStore(context) }
+    val observationsStore = remember { ObservationsStore(context) }
     val scope = rememberCoroutineScope()
     var settings by remember { mutableStateOf(AppSettings()) }
     var observerIdDraft by rememberSaveable { mutableStateOf("") }
@@ -1230,6 +1524,12 @@ private fun ObservationsScreen(api: SatnogsApi, modifier: Modifier = Modifier) {
 
     LaunchedEffect(Unit) {
         settings = settingsStore.load()
+    }
+
+    LaunchedEffect(savedObserverId) {
+        if (savedObserverId.isNotBlank()) {
+            observations = observationsStore.loadUnknownObservations(savedObserverId)
+        }
     }
 
     if (showingObserverIdDialog) {
@@ -1271,6 +1571,7 @@ private fun ObservationsScreen(api: SatnogsApi, modifier: Modifier = Modifier) {
                 .onSuccess { page ->
                     observations = page.results
                     nextCursor = page.nextCursor
+                    observationsStore.saveUnknownObservations(savedObserverId, observations)
                 }
                 .onFailure { error = it.message ?: "Failed to fetch observations" }
             loading = false
@@ -1289,6 +1590,7 @@ private fun ObservationsScreen(api: SatnogsApi, modifier: Modifier = Modifier) {
                     val existingIds = observations.map { it.id }.toSet()
                     observations = observations + page.results.filterNot { existingIds.contains(it.id) }
                     nextCursor = page.nextCursor
+                    observationsStore.saveUnknownObservations(savedObserverId, observations)
                 }
                 .onFailure { error = it.message ?: "Failed to load more observations" }
             loadingNextPage = false
@@ -1637,6 +1939,9 @@ private fun ObservationAudioTab(observation: Observation) {
     var preparing by rememberSaveable(audioUrl) { mutableStateOf(false) }
     var playing by rememberSaveable(audioUrl) { mutableStateOf(false) }
     var status by rememberSaveable(audioUrl) { mutableStateOf("Ready") }
+    var durationMs by rememberSaveable(audioUrl) { mutableStateOf(0) }
+    var positionMs by rememberSaveable(audioUrl) { mutableStateOf(0) }
+    var seeking by rememberSaveable(audioUrl) { mutableStateOf(false) }
 
     DisposableEffect(audioUrl) {
         onDispose {
@@ -1644,6 +1949,19 @@ private fun ObservationAudioTab(observation: Observation) {
                 stop()
                 release()
             }
+        }
+    }
+
+    LaunchedEffect(player, playing, preparing, seeking) {
+        while (player != null && !preparing) {
+            val currentPlayer = player
+            if (currentPlayer != null) {
+                durationMs = runCatching { currentPlayer.duration.coerceAtLeast(0) }.getOrDefault(durationMs)
+                if (!seeking) {
+                    positionMs = runCatching { currentPlayer.currentPosition.coerceAtLeast(0) }.getOrDefault(positionMs)
+                }
+            }
+            delay(500)
         }
     }
 
@@ -1676,12 +1994,15 @@ private fun ObservationAudioTab(observation: Observation) {
                                 player = mediaPlayer
                                 mediaPlayer.setOnPreparedListener {
                                     preparing = false
+                                    durationMs = runCatching { it.duration.coerceAtLeast(0) }.getOrDefault(0)
+                                    positionMs = 0
                                     it.start()
                                     playing = true
                                     status = "Playing"
                                 }
                                 mediaPlayer.setOnCompletionListener {
                                     playing = false
+                                    positionMs = durationMs
                                     status = "Completed"
                                 }
                                 mediaPlayer.setOnErrorListener { mp, _, _ ->
@@ -1715,6 +2036,9 @@ private fun ObservationAudioTab(observation: Observation) {
                     player = null
                     playing = false
                     preparing = false
+                    durationMs = 0
+                    positionMs = 0
+                    seeking = false
                     status = "Stopped"
                 }
             ) {
@@ -1722,6 +2046,29 @@ private fun ObservationAudioTab(observation: Observation) {
                 Spacer(Modifier.width(6.dp))
                 Text("Stop")
             }
+        }
+        val sliderValue = if (durationMs > 0) {
+            (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        Slider(
+            value = sliderValue,
+            onValueChange = { value ->
+                seeking = true
+                positionMs = (value.coerceIn(0f, 1f) * durationMs).toInt()
+            },
+            onValueChangeFinished = {
+                player?.runCatching { seekTo(positionMs) }
+                seeking = false
+            },
+            enabled = durationMs > 0 && !preparing,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(Modifier.fillMaxWidth()) {
+            Text(formatPlaybackTime(positionMs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+            Spacer(Modifier.weight(1f))
+            Text(formatPlaybackTime(durationMs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         }
         Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
         Text(audioUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
@@ -2156,6 +2503,14 @@ private fun openUrl(context: Context, url: String) {
 private fun formatDegrees(value: Double): String = "%.1f deg".format(value)
 
 private fun formatDegreesShort(value: Double): String = "%.0f deg".format(value)
+
+private fun formatPlaybackTime(milliseconds: Int): String {
+    if (milliseconds <= 0) return "00:00"
+    val totalSeconds = milliseconds / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "%02d:%02d".format(minutes, seconds)
+}
 
 private fun sampledPolarPoints(
     riseAzimuth: Double,
