@@ -5,12 +5,13 @@ import net.bi119aTe5hXk.satscheduler.model.WatchTarget
 import net.bi119aTe5hXk.satscheduler.model.WatchStationSnapshot
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
 import java.util.UUID
 
 class WatchTargetStore(context: Context) {
     private val prefs = context.getSharedPreferences("sat_scheduler", Context.MODE_PRIVATE)
 
-    fun loadToken(): String = prefs.getString(KEY_TOKEN, "") ?: ""
+    fun loadToken(): String = (prefs.getString(KEY_TOKEN, "") ?: "").trim()
 
     fun saveToken(token: String) {
         prefs.edit().putString(KEY_TOKEN, token.trim()).apply()
@@ -33,11 +34,20 @@ class WatchTargetStore(context: Context) {
     fun exportTargets(targets: List<WatchTarget> = loadTargets()): String {
         val array = JSONArray()
         targets.forEach { array.put(it.toJson()) }
-        return array.toString(2)
+        return JSONObject()
+            .put("schemaVersion", 1)
+            .put("exportedAt", Instant.now().toString())
+            .put("targets", array)
+            .toString(2)
     }
 
     fun importTargets(rawJson: String): List<WatchTarget> {
-        val array = JSONArray(rawJson)
+        val trimmed = rawJson.trim()
+        val array = if (trimmed.startsWith("[")) {
+            JSONArray(trimmed)
+        } else {
+            JSONObject(trimmed).optJSONArray("targets") ?: JSONArray()
+        }
         val targets = (0 until array.length()).mapNotNull { index ->
             array.optJSONObject(index)?.toWatchTarget()
         }
@@ -87,7 +97,7 @@ fun newWatchTarget(
 }
 
 private fun JSONObject.toWatchTarget(): WatchTarget {
-    val stations = optJSONArray("stationIds") ?: JSONArray()
+    val stations = optJSONArrayCompat("stationIds", "stationIDs") ?: JSONArray()
     val stationNamesJson = optJSONObject("stationNames") ?: JSONObject()
     val stationNames = stationNamesJson.keys().asSequence().mapNotNull { key ->
         key.toIntOrNull()?.let { id -> id to stationNamesJson.optString(key) }
@@ -98,11 +108,11 @@ private fun JSONObject.toWatchTarget(): WatchTarget {
         stationSnapshotsJson.optJSONObject(key)?.toStationSnapshot()?.let { id to it }
     }.toMap()
     return WatchTarget(
-        id = optString("id"),
-        name = optString("name"),
-        satelliteId = optString("satelliteId"),
-        satelliteName = optString("satelliteName").takeIf { it.isNotBlank() },
-        transmitterId = optString("transmitterId"),
+        id = stringCompat("id")?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
+        name = stringCompat("name") ?: "",
+        satelliteId = stringCompat("satelliteId", "satelliteID") ?: "",
+        satelliteName = stringCompat("satelliteName")?.takeIf { it.isNotBlank() },
+        transmitterId = stringCompat("transmitterId", "transmitterID") ?: "",
         transmitterDescription = optString("transmitterDescription").takeIf { it.isNotBlank() },
         centerFrequency = if (has("centerFrequency") && !isNull("centerFrequency")) optInt("centerFrequency") else null,
         stationIds = (0 until stations.length()).mapNotNull { index ->
@@ -118,6 +128,16 @@ private fun JSONObject.toWatchTarget(): WatchTarget {
         minAzimuth = if (has("minAzimuth") && !isNull("minAzimuth")) optDouble("minAzimuth") else null,
         maxAzimuth = if (has("maxAzimuth") && !isNull("maxAzimuth")) optDouble("maxAzimuth") else null
     )
+}
+
+private fun JSONObject.stringCompat(vararg names: String): String? {
+    return names.firstNotNullOfOrNull { name ->
+        optString(name).takeIf { has(name) && it.isNotBlank() && it != "null" }
+    }
+}
+
+private fun JSONObject.optJSONArrayCompat(vararg names: String): JSONArray? {
+    return names.firstNotNullOfOrNull { name -> optJSONArray(name) }
 }
 
 private fun WatchTarget.toJson(): JSONObject {

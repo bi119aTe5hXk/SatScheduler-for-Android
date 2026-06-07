@@ -58,6 +58,17 @@ class SatnogsApi(private val tokenProvider: () -> String?) {
         return getObservationFirstPage(params)
     }
 
+    suspend fun fetchUnknownObservationsPage(observerId: String, cursor: String? = null): ObservationPage {
+        val params = linkedMapOf(
+            "status" to "unknown",
+            "observer" to observerId.trim()
+        )
+        if (!cursor.isNullOrBlank()) {
+            params["cursor"] = cursor
+        }
+        return getObservationPage(params)
+    }
+
     suspend fun fetchGoodObservations(noradCatId: Int): List<Observation> {
         return fetchAllObservationPages(
             params = mapOf("status" to "good", "norad_cat_id" to noradCatId.toString()),
@@ -80,8 +91,8 @@ class SatnogsApi(private val tokenProvider: () -> String?) {
                 JSONObject()
                     .put("ground_station", request.groundStationId)
                     .put("transmitter_uuid", request.transmitterUuid)
-                    .put("start", request.start)
-                    .put("end", request.end)
+                    .put("start", formatSatnogsScheduleDate(parseSatnogsInstant(request.start)))
+                    .put("end", formatSatnogsScheduleDate(parseSatnogsInstant(request.end)))
             )
         }
         val text = postText("https://network.satnogs.org/api/observations/", body.toString())
@@ -142,11 +153,6 @@ class SatnogsApi(private val tokenProvider: () -> String?) {
         )
     }
 
-    private data class ObservationPage(
-        val results: List<Observation>,
-        val nextCursor: String?
-    )
-
     private fun cursorValue(nextUrl: String?): String? {
         if (nextUrl.isNullOrBlank()) return null
         val query = runCatching { URL(nextUrl).query }.getOrNull() ?: return null
@@ -166,7 +172,7 @@ class SatnogsApi(private val tokenProvider: () -> String?) {
         val lastStart = observations.lastOrNull()?.start ?: return null
         if (observations.size < 25) return null
         return runCatching {
-            val encodedPosition = URLEncoder.encode(Instant.parse(lastStart).toString(), "UTF-8")
+            val encodedPosition = URLEncoder.encode(parseSatnogsInstant(lastStart).toString(), "UTF-8")
             Base64.getEncoder().encodeToString("p=$encodedPosition".toByteArray(Charsets.UTF_8))
         }.getOrNull()
     }
@@ -188,9 +194,6 @@ class SatnogsApi(private val tokenProvider: () -> String?) {
             requestMethod = "GET"
             connectTimeout = 15_000
             readTimeout = 20_000
-            tokenProvider()?.takeIf { it.isNotBlank() }?.let { token ->
-                setRequestProperty("Authorization", "Token $token")
-            }
         }
         try {
             val status = connection.responseCode
@@ -206,7 +209,7 @@ class SatnogsApi(private val tokenProvider: () -> String?) {
     }
 
     private suspend fun postText(baseUrl: String, body: String): String = withContext(Dispatchers.IO) {
-        val token = tokenProvider()?.takeIf { it.isNotBlank() }
+        val token = tokenProvider()?.trim()?.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("SatNOGS API token is required to schedule observations.")
         val connection = (URL(baseUrl).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -236,6 +239,11 @@ data class ObservationScheduleRequest(
     val transmitterUuid: String,
     val start: String,
     val end: String
+)
+
+data class ObservationPage(
+    val results: List<Observation>,
+    val nextCursor: String?
 )
 
 private fun JSONArray.objects(): List<JSONObject> {
@@ -324,12 +332,31 @@ private fun JSONObject.toObservation(): Observation {
         start = stringOrNull("start"),
         end = stringOrNull("end"),
         groundStation = intOrNull("ground_station"),
+        transmitter = stringOrNull("transmitter"),
+        satId = stringOrNull("sat_id"),
         stationName = stringOrNull("station_name"),
+        stationLat = doubleOrNull("station_lat"),
+        stationLng = doubleOrNull("station_lng"),
+        stationAlt = doubleOrNull("station_alt"),
         satelliteName = stringOrNull("satellite_name"),
         noradCatId = intOrNull("norad_cat_id"),
+        payload = stringOrNull("payload"),
+        waterfall = stringOrNull("waterfall"),
         status = stringOrNull("status"),
+        vettedStatus = stringOrNull("vetted_status"),
+        riseAzimuth = doubleOrNull("rise_azimuth"),
+        setAzimuth = doubleOrNull("set_azimuth"),
         transmitterDescription = stringOrNull("transmitter_description"),
         transmitterUuid = stringOrNull("transmitter_uuid"),
+        transmitterType = stringOrNull("transmitter_type"),
+        transmitterMode = stringOrNull("transmitter_mode"),
+        transmitterDownlinkLow = intOrNull("transmitter_downlink_low"),
+        transmitterDownlinkHigh = intOrNull("transmitter_downlink_high"),
+        tle0 = stringOrNull("tle0"),
+        tle1 = stringOrNull("tle1"),
+        tle2 = stringOrNull("tle2"),
+        centerFrequency = intOrNull("center_frequency"),
+        observer = stringOrNull("observer"),
         observationFrequency = intOrNull("observation_frequency"),
         maxAltitude = doubleOrNull("max_altitude")
     )

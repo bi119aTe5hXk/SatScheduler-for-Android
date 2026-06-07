@@ -78,12 +78,31 @@ private fun Observation.toJson(): JSONObject {
         .put("start", start)
         .put("end", end)
         .put("groundStation", groundStation)
+        .put("transmitter", transmitter)
+        .put("satId", satId)
         .put("stationName", stationName)
+        .put("stationLat", stationLat)
+        .put("stationLng", stationLng)
+        .put("stationAlt", stationAlt)
         .put("satelliteName", satelliteName)
         .put("noradCatId", noradCatId)
+        .put("payload", payload)
+        .put("waterfall", waterfall)
         .put("status", status)
+        .put("vettedStatus", vettedStatus)
+        .put("riseAzimuth", riseAzimuth)
+        .put("setAzimuth", setAzimuth)
         .put("transmitterDescription", transmitterDescription)
         .put("transmitterUuid", transmitterUuid)
+        .put("transmitterType", transmitterType)
+        .put("transmitterMode", transmitterMode)
+        .put("transmitterDownlinkLow", transmitterDownlinkLow)
+        .put("transmitterDownlinkHigh", transmitterDownlinkHigh)
+        .put("tle0", tle0)
+        .put("tle1", tle1)
+        .put("tle2", tle2)
+        .put("centerFrequency", centerFrequency)
+        .put("observer", observer)
         .put("observationFrequency", observationFrequency)
         .put("maxAltitude", maxAltitude)
 }
@@ -94,12 +113,31 @@ private fun JSONObject.toObservationCache(): Observation {
         start = stringOrNull("start"),
         end = stringOrNull("end"),
         groundStation = intOrNull("groundStation"),
+        transmitter = stringOrNull("transmitter"),
+        satId = stringOrNull("satId"),
         stationName = stringOrNull("stationName"),
+        stationLat = doubleOrNull("stationLat"),
+        stationLng = doubleOrNull("stationLng"),
+        stationAlt = doubleOrNull("stationAlt"),
         satelliteName = stringOrNull("satelliteName"),
         noradCatId = intOrNull("noradCatId"),
+        payload = stringOrNull("payload"),
+        waterfall = stringOrNull("waterfall"),
         status = stringOrNull("status"),
+        vettedStatus = stringOrNull("vettedStatus"),
+        riseAzimuth = doubleOrNull("riseAzimuth"),
+        setAzimuth = doubleOrNull("setAzimuth"),
         transmitterDescription = stringOrNull("transmitterDescription"),
         transmitterUuid = stringOrNull("transmitterUuid"),
+        transmitterType = stringOrNull("transmitterType"),
+        transmitterMode = stringOrNull("transmitterMode"),
+        transmitterDownlinkLow = intOrNull("transmitterDownlinkLow"),
+        transmitterDownlinkHigh = intOrNull("transmitterDownlinkHigh"),
+        tle0 = stringOrNull("tle0"),
+        tle1 = stringOrNull("tle1"),
+        tle2 = stringOrNull("tle2"),
+        centerFrequency = intOrNull("centerFrequency"),
+        observer = stringOrNull("observer"),
         observationFrequency = intOrNull("observationFrequency"),
         maxAltitude = doubleOrNull("maxAltitude")
     )

@@ -69,12 +69,31 @@ data class Observation(
     val start: String?,
     val end: String?,
     val groundStation: Int?,
+    val transmitter: String?,
+    val satId: String?,
     val stationName: String?,
+    val stationLat: Double?,
+    val stationLng: Double?,
+    val stationAlt: Double?,
     val satelliteName: String?,
     val noradCatId: Int?,
+    val payload: String?,
+    val waterfall: String?,
     val status: String?,
+    val vettedStatus: String?,
+    val riseAzimuth: Double?,
+    val setAzimuth: Double?,
     val transmitterDescription: String?,
     val transmitterUuid: String?,
+    val transmitterType: String?,
+    val transmitterMode: String?,
+    val transmitterDownlinkLow: Int?,
+    val transmitterDownlinkHigh: Int?,
+    val tle0: String?,
+    val tle1: String?,
+    val tle2: String?,
+    val centerFrequency: Int?,
+    val observer: String?,
     val observationFrequency: Int?,
     val maxAltitude: Double?
 ) {
@@ -82,13 +101,20 @@ data class Observation(
         get() = stationName ?: groundStation?.let { "Station $it" } ?: "Station"
 
     val title: String
-        get() = satelliteName ?: noradCatId?.let { "NORAD $it" } ?: "Observation $id"
+        get() = satelliteName ?: tle0 ?: noradCatId?.let { "NORAD $it" } ?: "Observation $id"
+
+    val transmitterDisplayName: String
+        get() = transmitterDescription ?: transmitterUuid ?: transmitter ?: "Transmitter"
 
     val frequencyText: String
-        get() = observationFrequency?.let { "%.3f MHz".format(it / 1_000_000.0) } ?: "-"
+        get() = (observationFrequency ?: transmitterDownlinkLow ?: centerFrequency)
+            ?.let { "%.3f MHz".format(it / 1_000_000.0) } ?: "-"
 
     val maxAltitudeText: String
         get() = maxAltitude?.let { "%.0f deg".format(it) } ?: "-"
+
+    val vettedStatusDisplayText: String
+        get() = vettedStatus ?: "unknown"
 }
 
 data class WatchTarget(
@@ -144,10 +170,10 @@ data class PredictedPass(
     val azimuthSamples: List<Double>
 ) {
     val startInstant: java.time.Instant
-        get() = java.time.Instant.parse(start)
+        get() = net.bi119aTe5hXk.satscheduler.data.parseSatnogsInstant(start)
 
     val endInstant: java.time.Instant
-        get() = java.time.Instant.parse(end)
+        get() = net.bi119aTe5hXk.satscheduler.data.parseSatnogsInstant(end)
 }
 
 data class PredictionConflictSummary(

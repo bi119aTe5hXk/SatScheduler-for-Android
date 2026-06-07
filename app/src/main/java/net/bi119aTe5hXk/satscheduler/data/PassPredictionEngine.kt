@@ -133,8 +133,8 @@ fun filterConflicts(
                 overlaps(
                     pass.startInstant.minus(buffer),
                     pass.endInstant.plus(buffer),
-                    observation.start?.let(Instant::parse),
-                    observation.end?.let(Instant::parse)
+                    parseSatnogsInstantOrNull(observation.start),
+                    parseSatnogsInstantOrNull(observation.end)
                 )
         }
     }

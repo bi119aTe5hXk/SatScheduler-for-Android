@@ -3,14 +3,21 @@ package net.bi119aTe5hXk.satscheduler.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import androidx.compose.foundation.clickable
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.graphics.Paint
+import android.media.MediaPlayer
+import android.net.Uri
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,8 +45,11 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Tab
+import androidx.compose.material3.PrimaryTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -51,6 +61,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -58,22 +69,39 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Timeline
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import net.bi119aTe5hXk.satscheduler.data.ObservationScheduleRequest
+import net.bi119aTe5hXk.satscheduler.data.ObservationPage
 import net.bi119aTe5hXk.satscheduler.data.AppSettings
 import net.bi119aTe5hXk.satscheduler.data.AppSettingsStore
 import net.bi119aTe5hXk.satscheduler.data.AutoScheduleSortOrder
@@ -89,6 +117,7 @@ import net.bi119aTe5hXk.satscheduler.data.TimeDisplayMode
 import net.bi119aTe5hXk.satscheduler.data.WatchTargetStore
 import net.bi119aTe5hXk.satscheduler.data.filterConflicts
 import net.bi119aTe5hXk.satscheduler.data.newWatchTarget
+import net.bi119aTe5hXk.satscheduler.data.parseSatnogsInstantOrNull
 import net.bi119aTe5hXk.satscheduler.data.toScheduleRequest
 import net.bi119aTe5hXk.satscheduler.model.GroundStation
 import net.bi119aTe5hXk.satscheduler.model.Observation
@@ -103,6 +132,10 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.net.URL
+import kotlin.math.cos
+import kotlin.math.min
+import kotlin.math.sin
 
 private enum class AppTab(val title: String) {
     WatchList("Watch List"),
@@ -110,6 +143,14 @@ private enum class AppTab(val title: String) {
     Timeline("Timeline"),
     Settings("Settings")
 }
+
+private val AppTab.icon: ImageVector
+    get() = when (this) {
+        AppTab.WatchList -> Icons.Default.Star
+        AppTab.Observations -> Icons.Default.GraphicEq
+        AppTab.Timeline -> Icons.Default.Timeline
+        AppTab.Settings -> Icons.Default.Settings
+    }
 
 @Composable
 fun SatSchedulerApp() {
@@ -126,6 +167,7 @@ fun SatSchedulerApp() {
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         bottomBar = {
             NavigationBar {
                 AppTab.entries.forEach { tab ->
@@ -133,7 +175,7 @@ fun SatSchedulerApp() {
                         selected = selectedTab == tab,
                         onClick = { selectedTab = tab },
                         label = { Text(tab.title) },
-                        icon = {}
+                        icon = { Icon(tab.icon, contentDescription = tab.title) }
                     )
                 }
             }
@@ -156,8 +198,9 @@ fun SatSchedulerApp() {
                 token = token,
                 targets = targets,
                 onSaveToken = { newToken ->
-                    token = newToken
-                    store.saveToken(newToken)
+                    val trimmedToken = newToken.trim()
+                    token = trimmedToken
+                    store.saveToken(trimmedToken)
                 },
                 onTargetsChanged = { updated ->
                     targets = updated
@@ -837,8 +880,8 @@ private fun BatchScheduleScreen(
     val canExecute = !loading && !executing && candidates.isNotEmpty() && (!executedOnce || failedCount > 0)
     val timelineItems = (plan?.existingObservations ?: emptyList()).mapNotNull { observation ->
         val stationId = observation.groundStation ?: return@mapNotNull null
-        val start = observation.start?.let { runCatching { Instant.parse(it) }.getOrNull() } ?: return@mapNotNull null
-        val end = observation.end?.let { runCatching { Instant.parse(it) }.getOrNull() } ?: return@mapNotNull null
+        val start = parseSatnogsInstantOrNull(observation.start) ?: return@mapNotNull null
+        val end = parseSatnogsInstantOrNull(observation.end) ?: return@mapNotNull null
         TimelineItem(
             stationId = stationId,
             stationName = observation.stationName ?: "Station $stationId",
@@ -1105,12 +1148,17 @@ private data class TimelineItem(
 )
 
 @Composable
-private fun PassTimeline(items: List<TimelineItem>, start: Instant, end: Instant) {
+private fun PassTimeline(
+    items: List<TimelineItem>,
+    start: Instant,
+    end: Instant,
+    stationNames: Map<Int, String> = emptyMap()
+) {
     val totalMillis = Duration.between(start, end).toMillis().coerceAtLeast(1)
     val stations = items
         .groupBy { it.stationId }
         .mapValues { entry -> entry.value.sortedBy { it.start } }
-        .toSortedMap()
+    val stationIds = (stations.keys + stationNames.keys).sorted()
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1120,10 +1168,11 @@ private fun PassTimeline(items: List<TimelineItem>, start: Instant, end: Instant
                 Text(formatShortDateTime(end), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
             }
         }
-        stations.forEach { (_, stationItems) ->
+        stationIds.forEach { stationId ->
+            val stationItems = stations[stationId].orEmpty()
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    stationItems.firstOrNull()?.stationName ?: "Station",
+                    stationNames[stationId] ?: stationItems.firstOrNull()?.stationName ?: "Station $stationId",
                     modifier = Modifier.width(112.dp),
                     maxLines = 1,
                     style = MaterialTheme.typography.bodySmall
@@ -1165,51 +1214,141 @@ private fun PassTimeline(items: List<TimelineItem>, start: Instant, end: Instant
 
 @Composable
 private fun ObservationsScreen(api: SatnogsApi, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val settingsStore = remember { AppSettingsStore(context) }
     val scope = rememberCoroutineScope()
-    var observerId by rememberSaveable { mutableStateOf("") }
-    var futureOnly by rememberSaveable { mutableStateOf(true) }
+    var settings by remember { mutableStateOf(AppSettings()) }
+    var observerIdDraft by rememberSaveable { mutableStateOf("") }
+    var showingObserverIdDialog by rememberSaveable { mutableStateOf(false) }
+    var detailObservation by remember { mutableStateOf<Observation?>(null) }
     var observations by remember { mutableStateOf<List<Observation>>(emptyList()) }
+    var nextCursor by rememberSaveable { mutableStateOf<String?>(null) }
     var loading by rememberSaveable { mutableStateOf(false) }
+    var loadingNextPage by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf("") }
+    val savedObserverId = settings.observerId.trim()
+
+    LaunchedEffect(Unit) {
+        settings = settingsStore.load()
+    }
+
+    if (showingObserverIdDialog) {
+        ObserverIdDialog(
+            observerId = observerIdDraft,
+            onObserverIdChange = { observerIdDraft = it },
+            onDismiss = { showingObserverIdDialog = false },
+            onSave = {
+                val updated = settings.copy(observerId = observerIdDraft.trim())
+                settingsStore.save(updated)
+                settings = updated
+                showingObserverIdDialog = false
+                error = ""
+            }
+        )
+    }
+
+    detailObservation?.let { observation ->
+        ObservationDetailScreen(
+            observation = observation,
+            onBack = { detailObservation = null },
+            modifier = modifier
+        )
+        return
+    }
+
+    fun loadFirstPage() {
+        scope.launch {
+            if (savedObserverId.isBlank()) {
+                observerIdDraft = ""
+                showingObserverIdDialog = true
+                return@launch
+            }
+            loading = true
+            error = ""
+            runCatching {
+                api.fetchUnknownObservationsPage(observerId = savedObserverId)
+            }
+                .onSuccess { page ->
+                    observations = page.results
+                    nextCursor = page.nextCursor
+                }
+                .onFailure { error = it.message ?: "Failed to fetch observations" }
+            loading = false
+        }
+    }
+
+    fun loadNextPage() {
+        val cursor = nextCursor ?: return
+        if (loading || loadingNextPage || savedObserverId.isBlank()) return
+        scope.launch {
+            loadingNextPage = true
+            runCatching {
+                api.fetchUnknownObservationsPage(observerId = savedObserverId, cursor = cursor)
+            }
+                .onSuccess { page ->
+                    val existingIds = observations.map { it.id }.toSet()
+                    observations = observations + page.results.filterNot { existingIds.contains(it.id) }
+                    nextCursor = page.nextCursor
+                }
+                .onFailure { error = it.message ?: "Failed to load more observations" }
+            loadingNextPage = false
+        }
+    }
 
     Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Observations", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        OutlinedTextField(
-            value = observerId,
-            onValueChange = { observerId = it },
-            label = { Text("Observer ID") },
-            placeholder = { Text("Optional") },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Future only")
-            Spacer(Modifier.width(8.dp))
-            Switch(checked = futureOnly, onCheckedChange = { futureOnly = it })
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Observations", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
-            Button(
-                onClick = {
-                    scope.launch {
-                        loading = true
-                        error = ""
-                        runCatching {
-                            api.fetchObservations(observerId = observerId.ifBlank { null }, future = futureOnly)
+            IconButton(
+                onClick = { loadFirstPage() },
+                enabled = !loading && !loadingNextPage
+            ) {
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh observations")
+            }
+        }
+        if (savedObserverId.isBlank()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Observer ID is not set.", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Set your SatNOGS observer ID to load observations that need rating.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Button(
+                        onClick = {
+                            observerIdDraft = ""
+                            showingObserverIdDialog = true
                         }
-                            .onSuccess { observations = it }
-                            .onFailure { error = it.message ?: "Failed to fetch observations" }
-                        loading = false
-                    }
-                },
-                enabled = !loading
-            ) { Text("Refresh") }
+                    ) { Text("Set Observer ID") }
+                }
+            }
         }
         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
         if (observations.isEmpty() && !loading) {
-            EmptyState("Fetch observations from the SatNOGS Network API.")
+            EmptyState(
+                if (savedObserverId.isBlank()) {
+                    "Set an Observer ID before loading observations."
+                } else {
+                    "No unrated observations for this observer."
+                }
+            )
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
                 items(observations, key = { it.id }) { observation ->
-                    ObservationCard(observation)
+                    if (nextCursor != null && observations.indexOf(observation) >= observations.size - 5) {
+                        LaunchedEffect(observation.id, nextCursor) {
+                            loadNextPage()
+                        }
+                    }
+                    ObservationCard(
+                        observation = observation,
+                        onClick = { detailObservation = observation }
+                    )
+                }
+                if (loadingNextPage) {
+                    item { LoadingRow("Loading more observations...") }
                 }
             }
         }
@@ -1217,8 +1356,47 @@ private fun ObservationsScreen(api: SatnogsApi, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ObservationCard(observation: Observation) {
-    Card(Modifier.fillMaxWidth()) {
+private fun ObserverIdDialog(
+    observerId: String,
+    onObserverIdChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Observer ID") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = observerId,
+                    onValueChange = onObserverIdChange,
+                    label = { Text("Observer ID") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "To find your Observer ID, open SatNOGS Network in a browser and check the message in the top-right corner, such as '<number> observations needs rating.' For your own account, the page URL usually includes observer=XXXX. To find another user's ID, select that username in the Observer filter, click Search, then check observer=XXXX in the updated URL.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onSave,
+                enabled = observerId.trim().toIntOrNull() != null
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun ObservationCard(observation: Observation, onClick: (() -> Unit)? = null) {
+    Card(
+        Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+    ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(observation.title, fontWeight = FontWeight.SemiBold)
@@ -1232,6 +1410,325 @@ private fun ObservationCard(observation: Observation) {
     }
 }
 
+private enum class ObservationDetailTab(val title: String) {
+    Info("Info"),
+    Waterfall("Waterfall"),
+    Audio("Audio")
+}
+
+@Composable
+private fun ObservationDetailScreen(
+    observation: Observation,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var selectedTab by rememberSaveable { mutableStateOf(ObservationDetailTab.Info) }
+
+    Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Text(observation.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+        PrimaryTabRow(selectedTabIndex = ObservationDetailTab.entries.indexOf(selectedTab)) {
+            ObservationDetailTab.entries.forEach { tab ->
+                Tab(
+                    selected = selectedTab == tab,
+                    onClick = { selectedTab = tab },
+                    text = { Text(tab.title) }
+                )
+            }
+        }
+        when (selectedTab) {
+            ObservationDetailTab.Info -> ObservationInfoTab(observation)
+            ObservationDetailTab.Waterfall -> ObservationWaterfallTab(observation)
+            ObservationDetailTab.Audio -> ObservationAudioTab(observation)
+        }
+    }
+}
+
+@Composable
+private fun ObservationInfoTab(observation: Observation) {
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+        item {
+            InfoCard("Observation") {
+                InfoRow("ID", observation.id.toString())
+                InfoRow("Status", observation.status ?: "unknown")
+                InfoRow("Vetted Status", observation.vettedStatusDisplayText)
+                InfoRow("Start", observation.start ?: "-")
+                InfoRow("End", observation.end ?: "-")
+                observation.riseAzimuth?.let { InfoRow("Rise Azimuth", formatDegrees(it)) }
+                observation.setAzimuth?.let { InfoRow("Set Azimuth", formatDegrees(it)) }
+                observation.maxAltitude?.let { InfoRow("Max Altitude", formatDegrees(it)) }
+            }
+        }
+        item {
+            InfoCard("Satellite") {
+                InfoRow("Name", observation.title)
+                observation.noradCatId?.let { InfoRow("NORAD", it.toString()) }
+                observation.satId?.let { InfoRow("Sat ID", it) }
+                observation.tle0?.let { InfoRow("TLE 0", it) }
+            }
+        }
+        item {
+            InfoCard("Station / Transmitter") {
+                InfoRow("Ground Station", observation.stationDisplayName)
+                observation.groundStation?.let { InfoRow("Station ID", it.toString()) }
+                observation.stationLat?.let { InfoRow("Station Lat", "%.5f".format(it)) }
+                observation.stationLng?.let { InfoRow("Station Lng", "%.5f".format(it)) }
+                observation.stationAlt?.let { InfoRow("Station Alt", "%.0f m".format(it)) }
+                InfoRow("Transmitter", observation.transmitterDisplayName)
+                observation.transmitterMode?.let { InfoRow("Mode", it) }
+                observation.transmitterType?.let { InfoRow("Type", it) }
+                InfoRow("Frequency", observation.frequencyText)
+            }
+        }
+        if (observation.riseAzimuth != null || observation.setAzimuth != null || observation.maxAltitude != null) {
+            item {
+                InfoCard("Polar Plot") {
+                    ObservationPolarPlot(
+                        riseAzimuth = observation.riseAzimuth,
+                        setAzimuth = observation.setAzimuth,
+                        maxAltitude = observation.maxAltitude,
+                        modifier = Modifier.fillMaxWidth().height(240.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InfoCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Text(label, modifier = Modifier.width(128.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+        Text(value, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun ObservationPolarPlot(
+    riseAzimuth: Double?,
+    setAzimuth: Double?,
+    maxAltitude: Double?,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier) {
+        val radius = min(size.width, size.height) / 2f - 28f
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.Gray.toArgb()
+            textSize = 28f
+            textAlign = Paint.Align.CENTER
+        }
+        val markerTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.Gray.toArgb()
+            textSize = 24f
+            textAlign = Paint.Align.CENTER
+        }
+        listOf(0.25f, 0.5f, 0.75f, 1f).forEach { scale ->
+            drawCircle(
+                color = Color.Gray.copy(alpha = if (scale == 1f) 0.45f else 0.22f),
+                radius = radius * scale,
+                center = center,
+                style = Stroke(width = if (scale == 1f) 1.3f else 0.8f)
+            )
+        }
+        drawLine(Color.Gray.copy(alpha = 0.25f), Offset(center.x, center.y - radius), Offset(center.x, center.y + radius), strokeWidth = 1f)
+        drawLine(Color.Gray.copy(alpha = 0.25f), Offset(center.x - radius, center.y), Offset(center.x + radius, center.y), strokeWidth = 1f)
+        drawIntoCanvas { canvas ->
+            canvas.nativeCanvas.drawText("N", center.x, center.y - radius - 12f, textPaint)
+            canvas.nativeCanvas.drawText("E", center.x + radius + 18f, center.y + 9f, textPaint)
+            canvas.nativeCanvas.drawText("S", center.x, center.y + radius + 28f, textPaint)
+            canvas.nativeCanvas.drawText("W", center.x - radius - 18f, center.y + 9f, textPaint)
+        }
+
+        if (riseAzimuth != null && setAzimuth != null && maxAltitude != null) {
+            val points = sampledPolarPoints(riseAzimuth, setAzimuth, maxAltitude, center, radius)
+            if (points.isNotEmpty()) {
+                val path = Path().apply {
+                    moveTo(points.first().x, points.first().y)
+                    points.drop(1).forEach { lineTo(it.x, it.y) }
+                }
+                drawPath(path, color = Color(0xFF1C6DD0), style = Stroke(width = 3f))
+            }
+        }
+        riseAzimuth?.let {
+            val point = polarPoint(it, 0.0, center, radius)
+            drawCircle(Color(0xFF1C6DD0), radius = 5f, center = point)
+            drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText("Rise ${formatDegreesShort(it)}", point.x, point.y - 12f, markerTextPaint)
+            }
+        }
+        setAzimuth?.let {
+            val point = polarPoint(it, 0.0, center, radius)
+            drawCircle(Color(0xFFE57A00), radius = 5f, center = point)
+            drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText("Set ${formatDegreesShort(it)}", point.x, point.y - 12f, markerTextPaint)
+            }
+        }
+        if (riseAzimuth != null && setAzimuth != null && maxAltitude != null) {
+            val maxPoint = polarPoint(interpolatedAzimuth(riseAzimuth, setAzimuth, 0.5), maxAltitude, center, radius)
+            drawCircle(
+                Color(0xFF2A9D55),
+                radius = 5f,
+                center = maxPoint
+            )
+            drawIntoCanvas { canvas ->
+                canvas.nativeCanvas.drawText("Max ${formatDegreesShort(maxAltitude)}", maxPoint.x, maxPoint.y - 12f, markerTextPaint)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ObservationWaterfallTab(observation: Observation) {
+    val context = LocalContext.current
+    val waterfallUrl = observation.waterfall
+    var bitmap by remember(waterfallUrl) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var loading by rememberSaveable(waterfallUrl) { mutableStateOf(false) }
+    var error by rememberSaveable(waterfallUrl) { mutableStateOf("") }
+
+    LaunchedEffect(waterfallUrl) {
+        bitmap = null
+        error = ""
+        if (!waterfallUrl.isNullOrBlank()) {
+            loading = true
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    URL(waterfallUrl).openStream().use { BitmapFactory.decodeStream(it) }
+                }
+            }
+                .onSuccess { bitmap = it }
+                .onFailure { error = it.message ?: "Failed to load waterfall" }
+            loading = false
+        }
+    }
+
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        when {
+            waterfallUrl.isNullOrBlank() -> EmptyState("No waterfall image.")
+            loading -> LoadingRow("Loading waterfall...")
+            bitmap != null -> Image(bitmap!!.asImageBitmap(), contentDescription = "Waterfall", modifier = Modifier.fillMaxWidth(), contentScale = ContentScale.FillWidth)
+            error.isNotBlank() -> Text(error, color = MaterialTheme.colorScheme.error)
+        }
+        waterfallUrl?.let { url ->
+            OutlinedButton(onClick = { openUrl(context, url) }) { Text("Open Waterfall") }
+        }
+    }
+}
+
+@Composable
+private fun ObservationAudioTab(observation: Observation) {
+    val context = LocalContext.current
+    val audioUrl = observation.payload
+    var player by remember(audioUrl) { mutableStateOf<MediaPlayer?>(null) }
+    var preparing by rememberSaveable(audioUrl) { mutableStateOf(false) }
+    var playing by rememberSaveable(audioUrl) { mutableStateOf(false) }
+    var status by rememberSaveable(audioUrl) { mutableStateOf("Ready") }
+
+    DisposableEffect(audioUrl) {
+        onDispose {
+            player?.runCatching {
+                stop()
+                release()
+            }
+        }
+    }
+
+    Column(
+        Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        if (audioUrl.isNullOrBlank()) {
+            EmptyState("No audio playback.")
+            return@Column
+        }
+        Icon(Icons.Default.GraphicEq, contentDescription = null, modifier = Modifier.height(64.dp), tint = MaterialTheme.colorScheme.secondary)
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(
+                onClick = {
+                    if (playing) {
+                        player?.pause()
+                        playing = false
+                        status = "Paused"
+                    } else if (player != null) {
+                        player?.start()
+                        playing = true
+                        status = "Playing"
+                    } else {
+                        preparing = true
+                        status = "Preparing..."
+                        runCatching {
+                            MediaPlayer().also { mediaPlayer ->
+                                player = mediaPlayer
+                                mediaPlayer.setOnPreparedListener {
+                                    preparing = false
+                                    it.start()
+                                    playing = true
+                                    status = "Playing"
+                                }
+                                mediaPlayer.setOnCompletionListener {
+                                    playing = false
+                                    status = "Completed"
+                                }
+                                mediaPlayer.setOnErrorListener { mp, _, _ ->
+                                    preparing = false
+                                    playing = false
+                                    status = "Playback failed. This device may not support the audio stream."
+                                    mp.reset()
+                                    true
+                                }
+                                mediaPlayer.setDataSource(audioUrl)
+                                mediaPlayer.prepareAsync()
+                            }
+                        }.onFailure {
+                            preparing = false
+                            status = it.message ?: "Playback failed."
+                        }
+                    }
+                },
+                enabled = !preparing
+            ) {
+                Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text(if (playing) "Pause" else "Play")
+            }
+            OutlinedButton(
+                onClick = {
+                    player?.runCatching {
+                        stop()
+                        release()
+                    }
+                    player = null
+                    playing = false
+                    preparing = false
+                    status = "Stopped"
+                }
+            ) {
+                Icon(Icons.Default.Stop, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Stop")
+            }
+        }
+        Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+        Text(audioUrl, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.secondary)
+        OutlinedButton(onClick = { openUrl(context, audioUrl) }) { Text("Open Audio") }
+    }
+}
+
 @Composable
 private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -1240,8 +1737,18 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
     var observations by remember { mutableStateOf<List<Observation>>(emptyList()) }
     var loading by rememberSaveable { mutableStateOf(false) }
     var message by rememberSaveable { mutableStateOf("") }
+    var showingObservationList by rememberSaveable { mutableStateOf(false) }
     val stationNames = remember(targets) {
         targets.flatMap { target -> target.stationNames.entries }.associate { it.key to it.value }
+    }
+
+    if (showingObservationList) {
+        TimelineObservationListScreen(
+            observations = observations,
+            onBack = { showingObservationList = false },
+            modifier = modifier
+        )
+        return
     }
 
     fun refresh() {
@@ -1265,8 +1772,13 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
     Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Timeline", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            IconButton(onClick = { refresh() }, enabled = !loading && targets.isNotEmpty()) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh timeline")
+            Row {
+                IconButton(onClick = { showingObservationList = true }, enabled = observations.isNotEmpty()) {
+                    Icon(Icons.AutoMirrored.Filled.List, contentDescription = "Observation list")
+                }
+                IconButton(onClick = { refresh() }, enabled = !loading && targets.isNotEmpty()) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh timeline")
+                }
             }
         }
         if (targets.isEmpty()) {
@@ -1277,10 +1789,10 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
             EmptyState("No future observations found for watched stations.")
         } else {
             val now = Instant.now()
-            val end = now.plus(Duration.ofDays(3))
+            val end = now.plus(Duration.ofDays(2))
             val timelineItems = observations.mapNotNull { observation ->
-                val start = observation.start?.let { runCatching { Instant.parse(it) }.getOrNull() }
-                val stop = observation.end?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                val start = parseSatnogsInstantOrNull(observation.start)
+                val stop = parseSatnogsInstantOrNull(observation.end)
                 val stationId = observation.groundStation
                 if (start == null || stop == null || stationId == null) null else {
                     TimelineItem(
@@ -1293,8 +1805,42 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
                     )
                 }
             }
-            PassTimeline(items = timelineItems, start = now, end = end)
-            if (message.isNotBlank()) Text(message, color = MaterialTheme.colorScheme.error)
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                item {
+                    PassTimeline(
+                        items = timelineItems,
+                        start = now,
+                        end = end,
+                        stationNames = stationNames
+                    )
+                }
+                if (message.isNotBlank()) {
+                    item { Text(message, color = MaterialTheme.colorScheme.error) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TimelineObservationListScreen(
+    observations: List<Observation>,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+            }
+            Text("Observation List", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+        }
+        if (observations.isEmpty()) {
+            EmptyState("No cached future observations.")
+        } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
                 items(observations, key = { it.id }) { observation ->
                     ObservationCard(observation)
@@ -1600,3 +2146,58 @@ private val shortDateFormatter: DateTimeFormatter = DateTimeFormatter
     .withZone(ZoneId.systemDefault())
 
 private fun formatShortDateTime(instant: Instant): String = shortDateFormatter.format(instant)
+
+private fun openUrl(context: Context, url: String) {
+    runCatching {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }
+}
+
+private fun formatDegrees(value: Double): String = "%.1f deg".format(value)
+
+private fun formatDegreesShort(value: Double): String = "%.0f deg".format(value)
+
+private fun sampledPolarPoints(
+    riseAzimuth: Double,
+    setAzimuth: Double,
+    maxAltitude: Double,
+    center: Offset,
+    radius: Float
+): List<Offset> {
+    val risePoint = polarPoint(riseAzimuth, 0.0, center, radius)
+    val setPoint = polarPoint(setAzimuth, 0.0, center, radius)
+    val maxPoint = polarPoint(interpolatedAzimuth(riseAzimuth, setAzimuth, 0.5), maxAltitude, center, radius)
+    val control = Offset(
+        x = 2 * maxPoint.x - (risePoint.x + setPoint.x) / 2,
+        y = 2 * maxPoint.y - (risePoint.y + setPoint.y) / 2
+    )
+    return (0..72).map { index ->
+        val t = index / 72f
+        val oneMinusT = 1f - t
+        Offset(
+            x = oneMinusT * oneMinusT * risePoint.x + 2 * oneMinusT * t * control.x + t * t * setPoint.x,
+            y = oneMinusT * oneMinusT * risePoint.y + 2 * oneMinusT * t * control.y + t * t * setPoint.y
+        )
+    }
+}
+
+private fun polarPoint(azimuth: Double, altitude: Double, center: Offset, radius: Float): Offset {
+    val normalizedAltitude = altitude.coerceIn(0.0, 90.0) / 90.0
+    val distance = radius * (1.0 - normalizedAltitude).toFloat()
+    val radians = azimuth * Math.PI / 180.0
+    return Offset(
+        x = center.x + distance * sin(radians).toFloat(),
+        y = center.y - distance * cos(radians).toFloat()
+    )
+}
+
+private fun interpolatedAzimuth(start: Double, end: Double, progress: Double): Double {
+    var delta = end - start
+    if (delta > 180) {
+        delta -= 360
+    } else if (delta < -180) {
+        delta += 360
+    }
+    val value = start + delta * progress
+    return if (value < 0) value + 360 else value % 360
+}

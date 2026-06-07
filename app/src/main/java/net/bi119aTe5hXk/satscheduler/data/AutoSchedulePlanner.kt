@@ -118,10 +118,10 @@ class AutoSchedulePlanner(
                     overlaps(
                         candidate.pass.startInstant.minus(buffer),
                         candidate.pass.endInstant.plus(buffer),
-                        observation.start?.let { runCatching { Instant.parse(it) }.getOrNull() },
-                        observation.end?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                        parseSatnogsInstantOrNull(observation.start),
+                        parseSatnogsInstantOrNull(observation.end)
                     )
-            }
+                }
             val conflictsSelected = selected.any { selectedCandidate ->
                 selectedCandidate.pass.stationId == candidate.pass.stationId &&
                     overlaps(
