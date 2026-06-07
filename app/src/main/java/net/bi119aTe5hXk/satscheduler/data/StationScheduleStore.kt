@@ -28,6 +28,15 @@ class StationScheduleStore(context: Context) {
         prefs.edit().clear().apply()
     }
 
+    fun mergeCreatedObservations(observations: List<Observation>) {
+        val stationIds = observations.mapNotNull { it.groundStation }.distinct()
+        stationIds.forEach { stationId ->
+            val mergedById = (load(listOf(stationId)) + observations.filter { it.groundStation == stationId })
+                .associateBy { it.id }
+            saveStation(stationId, mergedById.values.sortedBy { it.start ?: "" })
+        }
+    }
+
     suspend fun refresh(
         api: SatnogsApi,
         stationIds: List<Int>,

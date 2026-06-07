@@ -6,7 +6,7 @@ data class AppSettings(
     val observerId: String = "",
     val timeDisplayMode: TimeDisplayMode = TimeDisplayMode.Local,
     val autoSchedulePreviewEnabled: Boolean = true,
-    val autoScheduleSortOrder: AutoScheduleSortOrder = AutoScheduleSortOrder.EarliestStart,
+    val autoScheduleSortOrder: AutoScheduleSortOrder = AutoScheduleSortOrder.WatchListOrder,
     val autoScheduleBatchSize: Int = 10
 )
 
@@ -16,9 +16,9 @@ enum class TimeDisplayMode(val label: String) {
 }
 
 enum class AutoScheduleSortOrder(val label: String) {
-    EarliestStart("Earliest start"),
-    HighestPeakElevation("Highest peak elevation"),
-    StationGrouped("Station grouped")
+    WatchListOrder("Watch List order"),
+    WatchListOrderThenPeakElevation("Watch List order + best elevation"),
+    PeakElevationFirst("Best elevation first")
 }
 
 class AppSettingsStore(context: Context) {
@@ -33,9 +33,9 @@ class AppSettingsStore(context: Context) {
             autoSchedulePreviewEnabled = prefs.getBoolean(KEY_PREVIEW_ENABLED, true),
             autoScheduleSortOrder = runCatching {
                 AutoScheduleSortOrder.valueOf(
-                    prefs.getString(KEY_SORT_ORDER, AutoScheduleSortOrder.EarliestStart.name) ?: AutoScheduleSortOrder.EarliestStart.name
+                    prefs.getString(KEY_SORT_ORDER, AutoScheduleSortOrder.WatchListOrder.name) ?: AutoScheduleSortOrder.WatchListOrder.name
                 )
-            }.getOrDefault(AutoScheduleSortOrder.EarliestStart),
+            }.getOrDefault(AutoScheduleSortOrder.WatchListOrder),
             autoScheduleBatchSize = prefs.getInt(KEY_BATCH_SIZE, 10).coerceIn(1, 50)
         )
     }

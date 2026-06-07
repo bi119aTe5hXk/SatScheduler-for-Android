@@ -1,15 +1,20 @@
 package net.bi119aTe5hXk.satscheduler.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -18,13 +23,13 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -44,6 +49,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -59,7 +77,11 @@ import net.bi119aTe5hXk.satscheduler.data.ObservationScheduleRequest
 import net.bi119aTe5hXk.satscheduler.data.AppSettings
 import net.bi119aTe5hXk.satscheduler.data.AppSettingsStore
 import net.bi119aTe5hXk.satscheduler.data.AutoScheduleSortOrder
+import net.bi119aTe5hXk.satscheduler.data.AutoScheduleCandidate
+import net.bi119aTe5hXk.satscheduler.data.AutoSchedulePlan
+import net.bi119aTe5hXk.satscheduler.data.AutoSchedulePlanner
 import net.bi119aTe5hXk.satscheduler.data.PassPredictionEngine
+import net.bi119aTe5hXk.satscheduler.data.ScheduleCandidateStatus
 import net.bi119aTe5hXk.satscheduler.data.SatnogsApi
 import net.bi119aTe5hXk.satscheduler.data.StationScheduleStore
 import net.bi119aTe5hXk.satscheduler.data.TleCacheStore
@@ -89,7 +111,6 @@ private enum class AppTab(val title: String) {
     Settings("Settings")
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SatSchedulerApp() {
     val context = LocalContext.current
@@ -105,7 +126,6 @@ fun SatSchedulerApp() {
     }
 
     Scaffold(
-        topBar = { CenterAlignedTopAppBar(title = { Text("SatScheduler") }) },
         bottomBar = {
             NavigationBar {
                 AppTab.entries.forEach { tab ->
@@ -158,11 +178,29 @@ private fun WatchListScreen(
 ) {
     var showingAddDialog by rememberSaveable { mutableStateOf(false) }
     var predictionTarget by remember { mutableStateOf<WatchTarget?>(null) }
+    var showingBatchSchedule by rememberSaveable { mutableStateOf(false) }
 
-    Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    if (showingBatchSchedule) {
+        BatchScheduleScreen(
+            api = api,
+            targets = targets,
+            onBack = { showingBatchSchedule = false },
+            modifier = modifier
+        )
+        return
+    }
+
+    Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Watch List", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            Button(onClick = { showingAddDialog = true }) { Text("Add") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IconButton(onClick = { showingBatchSchedule = true }, enabled = targets.isNotEmpty()) {
+                    Icon(Icons.Default.Sync, contentDescription = "Auto schedule")
+                }
+                IconButton(onClick = { showingAddDialog = true }) {
+                    Icon(Icons.Default.Add, contentDescription = "Add watch target")
+                }
+            }
         }
         if (targets.isEmpty()) {
             EmptyState("Add a satellite from the SatNOGS alive list, choose a transmitter and one or more online stations.")
@@ -733,6 +771,330 @@ private fun PredictedPassRow(pass: PredictedPass) {
     }
 }
 
+@Composable
+private fun BatchScheduleScreen(
+    api: SatnogsApi,
+    targets: List<WatchTarget>,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val settingsStore = remember { AppSettingsStore(context) }
+    val scheduleStore = remember { StationScheduleStore(context) }
+    val tleCacheStore = remember { TleCacheStore(context) }
+    val planner = remember { AutoSchedulePlanner() }
+    val scope = rememberCoroutineScope()
+    var settings by remember { mutableStateOf(settingsStore.load()) }
+    var plan by remember { mutableStateOf<AutoSchedulePlan?>(null) }
+    var candidates by remember { mutableStateOf<List<AutoScheduleCandidate>>(emptyList()) }
+    var loading by rememberSaveable { mutableStateOf(false) }
+    var executing by rememberSaveable { mutableStateOf(false) }
+    var executedOnce by rememberSaveable { mutableStateOf(false) }
+    var editMode by rememberSaveable { mutableStateOf(false) }
+    var progressText by rememberSaveable { mutableStateOf("") }
+    var message by rememberSaveable { mutableStateOf("") }
+    var sortMenuOpen by rememberSaveable { mutableStateOf(false) }
+
+    fun rebuild(priorityMode: AutoScheduleSortOrder = settings.autoScheduleSortOrder) {
+        scope.launch {
+            loading = true
+            message = ""
+            progressText = "Calculating candidates..."
+            val newPlan = planner.buildPlan(
+                api = api,
+                tleCacheStore = tleCacheStore,
+                scheduleStore = scheduleStore,
+                targets = targets,
+                priorityMode = priorityMode
+            )
+            plan = newPlan
+            candidates = newPlan.selectedCandidates
+            progressText = ""
+            loading = false
+            if (!settings.autoSchedulePreviewEnabled) {
+                executeBatch(
+                    api = api,
+                    scheduleStore = scheduleStore,
+                    settings = settings,
+                    candidates = candidates,
+                    retryFailedOnly = false,
+                    onCandidates = { candidates = it },
+                    onExecuting = { executing = it },
+                    onExecutedOnce = { executedOnce = it },
+                    onProgress = { progressText = it },
+                    onMessage = { message = it }
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        rebuild()
+    }
+
+    val failedCount = candidates.count { it.status == ScheduleCandidateStatus.Failed }
+    val pendingCount = candidates.count { it.status == ScheduleCandidateStatus.Pending }
+    val canExecute = !loading && !executing && candidates.isNotEmpty() && (!executedOnce || failedCount > 0)
+    val timelineItems = (plan?.existingObservations ?: emptyList()).mapNotNull { observation ->
+        val stationId = observation.groundStation ?: return@mapNotNull null
+        val start = observation.start?.let { runCatching { Instant.parse(it) }.getOrNull() } ?: return@mapNotNull null
+        val end = observation.end?.let { runCatching { Instant.parse(it) }.getOrNull() } ?: return@mapNotNull null
+        TimelineItem(
+            stationId = stationId,
+            stationName = observation.stationName ?: "Station $stationId",
+            label = observation.title,
+            start = start,
+            end = end,
+            color = Color(0xFF2F6FED)
+        )
+    } + candidates.map { candidate ->
+        TimelineItem(
+            stationId = candidate.pass.stationId,
+            stationName = candidate.pass.stationName,
+            label = candidate.target.name,
+            start = candidate.pass.startInstant,
+            end = candidate.pass.endInstant,
+            color = when (candidate.status) {
+                ScheduleCandidateStatus.Pending -> Color(0xFFE6A700)
+                ScheduleCandidateStatus.Scheduled -> Color(0xFF1F9D6E)
+                ScheduleCandidateStatus.Failed -> Color(0xFFD84A4A)
+            }
+        )
+    }
+
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        bottomBar = {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (executing) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(progressText, color = MaterialTheme.colorScheme.secondary)
+                }
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                enabled = canExecute && pendingCount + failedCount > 0,
+                onClick = {
+                    scope.launch {
+                        executeBatch(
+                            api = api,
+                            scheduleStore = scheduleStore,
+                            settings = settings,
+                            candidates = candidates,
+                            retryFailedOnly = executedOnce && failedCount > 0,
+                            onCandidates = { candidates = it },
+                            onExecuting = { executing = it },
+                            onExecutedOnce = { executedOnce = it },
+                            onProgress = { progressText = it },
+                            onMessage = { message = it }
+                        )
+                    }
+                }
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    when {
+                        executing -> "Scheduling..."
+                        executedOnce && failedCount > 0 -> "Retry failed"
+                        executedOnce -> "Scheduled"
+                        else -> "Schedule all"
+                    }
+                )
+            }
+            }
+        }
+    ) { padding ->
+        Column(Modifier.padding(padding).statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack, enabled = !executing) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                    Text("Auto Schedule Preview", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(onClick = { sortMenuOpen = true }, enabled = !executing) {
+                        Icon(Icons.Default.Sync, contentDescription = "Sort")
+                    }
+                    IconButton(onClick = { editMode = !editMode }, enabled = !executing) {
+                        Icon(Icons.Default.Edit, contentDescription = if (editMode) "Done editing" else "Edit")
+                    }
+                    IconButton(onClick = { rebuild() }, enabled = !loading && !executing) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                }
+            }
+            Text("Priority: ${settings.autoScheduleSortOrder.label}", color = MaterialTheme.colorScheme.secondary)
+            DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                AutoScheduleSortOrder.entries.forEach { order ->
+                    DropdownMenuItem(
+                        text = { Text(order.label) },
+                        onClick = {
+                            settings = settings.copy(autoScheduleSortOrder = order)
+                            settingsStore.save(settings)
+                            sortMenuOpen = false
+                            val currentPlan = plan
+                            if (currentPlan != null) {
+                                val resorted = planner.sortCandidates(candidates, order)
+                                candidates = resorted
+                                plan = currentPlan.copy(priorityMode = order, selectedCandidates = resorted)
+                            }
+                        }
+                    )
+                }
+            }
+            if (loading) {
+                LoadingRow(progressText.ifBlank { "Calculating auto schedule plan..." })
+            }
+            plan?.let { currentPlan ->
+                Text(
+                    "Satellites: ${currentPlan.satelliteCount}, calculated: ${currentPlan.candidateCount}, scheduled: ${candidates.count { it.status == ScheduleCandidateStatus.Scheduled }}, selected: ${candidates.size}, skipped: ${currentPlan.skippedCount}"
+                )
+                Text(
+                    "Range: ${formatShortDateTime(currentPlan.start)} - ${formatShortDateTime(currentPlan.end)}",
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+            if (timelineItems.isNotEmpty()) {
+                PassTimeline(
+                    items = timelineItems,
+                    start = plan?.start ?: Instant.now(),
+                    end = plan?.end ?: Instant.now().plus(Duration.ofDays(2))
+                )
+            }
+            if (message.isNotBlank()) {
+                Text(message, color = if (failedCount > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary)
+            }
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 12.dp)) {
+                items(candidates, key = { it.id }) { candidate ->
+                    AutoScheduleCandidateRow(
+                        candidate = candidate,
+                        editMode = editMode && !executing,
+                        canDelete = !executedOnce,
+                        onDelete = { candidates = candidates.filterNot { it.id == candidate.id } },
+                        onMoveUp = {
+                            val index = candidates.indexOfFirst { it.id == candidate.id }
+                            if (index > 0) candidates = candidates.toMutableList().also {
+                                val item = it.removeAt(index)
+                                it.add(index - 1, item)
+                            }
+                        },
+                        onMoveDown = {
+                            val index = candidates.indexOfFirst { it.id == candidate.id }
+                            if (index >= 0 && index < candidates.lastIndex) candidates = candidates.toMutableList().also {
+                                val item = it.removeAt(index)
+                                it.add(index + 1, item)
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoScheduleCandidateRow(
+    candidate: AutoScheduleCandidate,
+    editMode: Boolean,
+    canDelete: Boolean,
+    onDelete: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f)) {
+                    Text(candidate.target.name, fontWeight = FontWeight.SemiBold)
+                    Text("${candidate.pass.stationName} (${candidate.pass.stationId})", style = MaterialTheme.typography.bodySmall)
+                }
+                Text(candidate.status.name)
+            }
+            Text("${candidate.pass.start} -> ${candidate.pass.end}", style = MaterialTheme.typography.bodySmall)
+            Text("Peak: ${"%.1f".format(candidate.pass.maxElevation)} deg / Az: ${"%.0f".format(candidate.pass.azimuthStart)}-${"%.0f".format(candidate.pass.azimuthEnd)} deg", style = MaterialTheme.typography.bodySmall)
+            candidate.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            if (editMode) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IconButton(onClick = onMoveUp) {
+                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up")
+                    }
+                    IconButton(onClick = onMoveDown) {
+                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move down")
+                    }
+                    if (canDelete) {
+                        IconButton(onClick = onDelete) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private suspend fun executeBatch(
+    api: SatnogsApi,
+    scheduleStore: StationScheduleStore,
+    settings: AppSettings,
+    candidates: List<AutoScheduleCandidate>,
+    retryFailedOnly: Boolean,
+    onCandidates: (List<AutoScheduleCandidate>) -> Unit,
+    onExecuting: (Boolean) -> Unit,
+    onExecutedOnce: (Boolean) -> Unit,
+    onProgress: (String) -> Unit,
+    onMessage: (String) -> Unit
+) {
+    onExecuting(true)
+    var current = candidates
+    val targetStatuses = if (retryFailedOnly) setOf(ScheduleCandidateStatus.Failed) else setOf(ScheduleCandidateStatus.Pending)
+    val targetIds = current.filter { targetStatuses.contains(it.status) }.map { it.id }.toSet()
+    val pending = current.filter { targetIds.contains(it.id) }
+    if (pending.isEmpty()) {
+        onMessage("No requests to schedule.")
+        onExecuting(false)
+        return
+    }
+    val batchSize = settings.autoScheduleBatchSize.coerceIn(1, 50)
+    var completed = 0
+    val createdObservations = mutableListOf<Observation>()
+
+    pending.chunked(batchSize).forEach { batch ->
+        onProgress("Scheduling ${completed + 1}-${completed + batch.size} / ${pending.size}...")
+        runCatching { api.createObservations(batch.map { it.request }) }
+            .onSuccess { observations ->
+                createdObservations += observations
+                val batchIds = batch.map { it.id }.toSet()
+                current = current.map {
+                    if (batchIds.contains(it.id)) it.copy(status = ScheduleCandidateStatus.Scheduled, errorMessage = null) else it
+                }
+            }
+            .onFailure { error ->
+                val batchIds = batch.map { it.id }.toSet()
+                current = current.map {
+                    if (batchIds.contains(it.id)) it.copy(status = ScheduleCandidateStatus.Failed, errorMessage = error.message ?: "Schedule failed") else it
+                }
+            }
+        completed += batch.size
+        onCandidates(current)
+    }
+
+    if (createdObservations.isNotEmpty()) {
+        scheduleStore.mergeCreatedObservations(createdObservations)
+    }
+    val failedCount = current.count { it.status == ScheduleCandidateStatus.Failed }
+    onExecutedOnce(true)
+    onExecuting(false)
+    onProgress("")
+    onMessage(
+        if (failedCount > 0) {
+            "Scheduled ${createdObservations.size} observation(s), failed $failedCount request(s)."
+        } else {
+            "Scheduled ${createdObservations.size} observation(s)."
+        }
+    )
+}
+
 private data class TimelineItem(
     val stationId: Int,
     val stationName: String,
@@ -810,7 +1172,7 @@ private fun ObservationsScreen(api: SatnogsApi, modifier: Modifier = Modifier) {
     var loading by rememberSaveable { mutableStateOf(false) }
     var error by rememberSaveable { mutableStateOf("") }
 
-    Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Observations", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         OutlinedTextField(
             value = observerId,
@@ -900,11 +1262,11 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
         observations = scheduleStore.load(stationIds)
     }
 
-    Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Column(modifier.fillMaxSize().statusBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Timeline", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            OutlinedButton(onClick = { refresh() }, enabled = !loading && targets.isNotEmpty()) {
-                Text(if (loading) "Refreshing..." else "Refresh")
+            IconButton(onClick = { refresh() }, enabled = !loading && targets.isNotEmpty()) {
+                Icon(Icons.Default.Refresh, contentDescription = "Refresh timeline")
             }
         }
         if (targets.isEmpty()) {
@@ -943,29 +1305,191 @@ private fun TimelineScreen(api: SatnogsApi, targets: List<WatchTarget>, modifier
 }
 
 @Composable
-private fun SettingsScreen(token: String, onSaveToken: (String) -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsScreen(
+    token: String,
+    targets: List<WatchTarget>,
+    onSaveToken: (String) -> Unit,
+    onTargetsChanged: (List<WatchTarget>) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val settingsStore = remember { AppSettingsStore(context) }
+    val watchTargetStore = remember { WatchTargetStore(context) }
+    val stationScheduleStore = remember { StationScheduleStore(context) }
+    var settings by remember { mutableStateOf(settingsStore.load()) }
     var draftToken by rememberSaveable(token) { mutableStateOf(token) }
-    var savedMessage by rememberSaveable { mutableStateOf("") }
+    var observerId by rememberSaveable(settings.observerId) { mutableStateOf(settings.observerId) }
+    var batchSizeText by rememberSaveable(settings.autoScheduleBatchSize) { mutableStateOf(settings.autoScheduleBatchSize.toString()) }
+    var timeMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var sortMenuOpen by rememberSaveable { mutableStateOf(false) }
+    var importText by rememberSaveable { mutableStateOf("") }
+    var message by rememberSaveable { mutableStateOf("") }
 
-    Column(modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-        OutlinedTextField(
-            value = draftToken,
-            onValueChange = { draftToken = it },
-            label = { Text("SatNOGS API token") },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth()
+    fun saveSettings(updated: AppSettings = settings) {
+        val normalized = updated.copy(
+            observerId = observerId.trim(),
+            autoScheduleBatchSize = batchSizeText.toIntOrNull()?.coerceIn(1, 50) ?: 10
         )
-        Button(
-            onClick = {
-                onSaveToken(draftToken)
-                savedMessage = "Token saved locally."
-            }
-        ) { Text("Save token") }
-        if (savedMessage.isNotBlank()) {
-            Text(savedMessage, color = MaterialTheme.colorScheme.secondary)
+        settings = normalized
+        settingsStore.save(normalized)
+        message = "Settings saved."
+    }
+
+    LazyColumn(
+        modifier.fillMaxSize().statusBarsPadding().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(bottom = 20.dp)
+    ) {
+        item {
+            Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
         }
-        Text("The token is stored in this app's private preferences and used for SatNOGS requests that need authentication.")
+
+        item {
+            SettingsSection("Account") {
+                OutlinedTextField(
+                    value = draftToken,
+                    onValueChange = { draftToken = it },
+                    label = { Text("SatNOGS API token") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = observerId,
+                    onValueChange = { observerId = it },
+                    label = { Text("Observer ID") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = {
+                        onSaveToken(draftToken)
+                        message = "API token saved."
+                    }
+                ) { Text("Save API token") }
+                Button(
+                    onClick = {
+                        saveSettings()
+                        message = "Observer ID saved."
+                    },
+                    enabled = observerId.isBlank() || observerId.trim().toIntOrNull() != null
+                ) { Text("Save Observer ID") }
+                Text("Observer ID is used to load observations that need rating.", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        item {
+            SettingsSection("Display") {
+                OutlinedButton(onClick = { timeMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Time display: ${settings.timeDisplayMode.label}")
+                }
+                DropdownMenu(expanded = timeMenuOpen, onDismissRequest = { timeMenuOpen = false }) {
+                    TimeDisplayMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = { Text(mode.label) },
+                            onClick = {
+                                settings = settings.copy(timeDisplayMode = mode)
+                                settingsStore.save(settings)
+                                timeMenuOpen = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            SettingsSection("Batch auto schedule") {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Preview before scheduling")
+                    Switch(
+                        checked = settings.autoSchedulePreviewEnabled,
+                        onCheckedChange = {
+                            settings = settings.copy(autoSchedulePreviewEnabled = it)
+                            settingsStore.save(settings)
+                        }
+                    )
+                }
+                OutlinedButton(onClick = { sortMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Sort order: ${settings.autoScheduleSortOrder.label}")
+                }
+                DropdownMenu(expanded = sortMenuOpen, onDismissRequest = { sortMenuOpen = false }) {
+                    AutoScheduleSortOrder.entries.forEach { order ->
+                        DropdownMenuItem(
+                            text = { Text(order.label) },
+                            onClick = {
+                                settings = settings.copy(autoScheduleSortOrder = order)
+                                settingsStore.save(settings)
+                                sortMenuOpen = false
+                            }
+                        )
+                    }
+                }
+                Text(settings.autoScheduleSortOrder.descriptionText(), style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = batchSizeText,
+                    onValueChange = { batchSizeText = it },
+                    label = { Text("Batch size") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(onClick = { saveSettings() }) { Text("Save batch settings") }
+                Text("Batch auto schedule is not implemented yet; these values are saved for the upcoming workflow.", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        item {
+            SettingsSection("Watch list import / export") {
+                Text("Saved watch targets: ${targets.size}", color = MaterialTheme.colorScheme.secondary)
+                Button(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(
+                            ClipData.newPlainText("SatScheduler Watch List", watchTargetStore.exportTargets(targets))
+                        )
+                        message = "Watch list copied to clipboard."
+                    }
+                ) { Text("Export watch list") }
+                OutlinedTextField(
+                    value = importText,
+                    onValueChange = { importText = it },
+                    label = { Text("Import JSON") },
+                    modifier = Modifier.fillMaxWidth().height(140.dp)
+                )
+                Button(
+                    onClick = {
+                        runCatching { watchTargetStore.importTargets(importText) }
+                            .onSuccess {
+                                onTargetsChanged(it)
+                                message = "Imported ${it.size} watch target(s)."
+                            }
+                            .onFailure { message = "Import failed: ${it.message ?: "invalid JSON"}" }
+                    }
+                ) { Text("Import watch list") }
+            }
+        }
+
+        item {
+            SettingsSection("Local cache") {
+                Button(
+                    onClick = {
+                        stationScheduleStore.clearAll()
+                        message = "Timeline cache deleted."
+                    }
+                ) { Text("Delete timeline cache") }
+            }
+        }
+
+        if (message.isNotBlank()) {
+            item { Text(message, color = MaterialTheme.colorScheme.secondary) }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            content()
+        }
     }
 }
 
@@ -1059,6 +1583,14 @@ private fun Int.toMHzText(): String {
 private fun rangeText(label: String, min: Double?, max: Double?): String? {
     if (min == null && max == null) return null
     return "$label ${min?.formatDeg() ?: "-"}-${max?.formatDeg() ?: "-"} deg"
+}
+
+private fun AutoScheduleSortOrder.descriptionText(): String {
+    return when (this) {
+        AutoScheduleSortOrder.WatchListOrder -> "Use the manual Watch List order as the scheduling priority."
+        AutoScheduleSortOrder.WatchListOrderThenPeakElevation -> "Keep Watch List priority, but prefer higher peak elevation when choosing passes for the same target."
+        AutoScheduleSortOrder.PeakElevationFirst -> "Prefer higher peak elevation across all targets, regardless of Watch List order."
+    }
 }
 
 private fun Double.formatDeg(): String = "%g".format(this)
